@@ -737,6 +737,23 @@ void helper_mark_tbs_as_dirty(CPUState *env, target_ulong pc, uint32_t access_wi
     //  Try to find the page using the tlb contents
     phys_page = get_page_addr_code(cpu, pc, false);
     if(phys_page == -1 || !(p = page_find(phys_page >> TARGET_PAGE_BITS))) {
+        //  The store that brought us here has just used (and if needed filled)
+        //  the data TLB entry for this page. A page whose entry has no host
+        //  backing (addend 0) is an I/O region: unless it is executable I/O,
+        //  no translation block can originate from it, so the slow MMU walk
+        //  below is unnecessary. Firmware that hammers peripheral registers
+        //  otherwise pays a full page-table walk per store.
+        {
+            int mmu_idx = cpu_mmu_index(env);
+            int tlb_index = (pc >> TARGET_PAGE_BITS) & (CPU_TLB_SIZE - 1);
+            CPUTLBEntry *te = &env->tlb_table[mmu_idx][tlb_index];
+            target_ulong page = pc & TARGET_PAGE_MASK;
+            if(te->addr_write != (target_ulong)-1 && (te->addr_write & TARGET_PAGE_MASK) == page &&
+               (te->addr_write & TLB_MMIO) && !(te->addr_write & (IO_MEM_EXECUTABLE_IO | TLB_ONE_SHOT)) &&
+               (uintptr_t)(te->addend + page) == 0) {
+                return;
+            }
+        }
         if((env->current_tb != 0) && (pc < env->current_tb->pc) && (pc >= (env->current_tb->pc + env->current_tb->size))) {
             //  we are not on the same mem page, the mapping just does not exist
             return;
